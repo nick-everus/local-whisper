@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Whisper STT (Mic → Text)</title>
+  <style>
+    body { font-family: system-ui; max-width: 720px; margin: 40px auto; }
+    button { padding: 10px 14px; margin-right: 8px; }
+    #status { margin-top: 12px; opacity: 0.8; }
+    #out { margin-top: 16px; white-space: pre-wrap; border: 1px solid #ddd; padding: 12px; border-radius: 8px; min-height: 80px; }
+  </style>
+</head>
+<body>
+  <h2>Local Whisper STT</h2>
+  <p>Click <b>Enable Mic</b>, then <b>Start</b>, speak, then <b>Stop</b> to transcribe.</p>
+
+  <div>
+    <button id="enable">Enable Mic</button>
+    <button id="start" disabled>Start Recording</button>
+    <button id="stop" disabled>Stop</button>
+  </div>
+
+  <div id="status">Status: idle</div>
+  <div id="out"></div>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const outEl = document.getElementById("out");
+    const enableBtn = document.getElementById("enable");
+    const startBtn = document.getElementById("start");
+    const stopBtn = document.getElementById("stop");
+
+    let stream = null;
+    let recorder = null;
+    let chunks = [];
+
+    function setStatus(msg) {
+      statusEl.textContent = `Status: ${msg}`;
+    }
+
+    enableBtn.onclick = async () => {
+      try {
+        // Mic permission prompt happens here
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        setStatus("mic enabled");
+        startBtn.disabled = false;
+      } catch (e) {
+        setStatus("mic permission denied or unavailable");
+        outEl.textContent = String(e);
+      }
+    };
+
+    startBtn.onclick = () => {
+      chunks = [];
+      recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        setStatus("uploading to Whisper…");
+
+        const blob = new Blob(chunks, { type: "audio/webm" });
+        const form = new FormData();
+        form.append("audio", blob, "audio.webm");
+
+        try {
+          const res = await fetch("http://127.0.0.1:8000/transcribe", {
+            method: "POST",
+            body: form,
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data?.detail || JSON.stringify(data));
+          setStatus(`done (lang: ${data.language})`);
+          outEl.textContent = data.text || "(no text detected)";
+        } catch (e) {
+          setStatus("error");
+          outEl.textContent = String(e);
+        }
+      };
+
+      recorder.start();
+      setStatus("recording…");
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+    };
+
+    stopBtn.onclick = () => {
+      recorder.stop();
+      setStatus("processing…");
+      stopBtn.disabled = true;
+      startBtn.disabled = false;
+    };
+  </script>
+</body>
+</html>
+
