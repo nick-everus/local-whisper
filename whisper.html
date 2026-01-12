@@ -9,16 +9,23 @@
     button { padding: 10px 14px; margin-right: 8px; }
     #status { margin-top: 12px; opacity: 0.8; }
     #out { margin-top: 16px; white-space: pre-wrap; border: 1px solid #ddd; padding: 12px; border-radius: 8px; min-height: 80px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    label { user-select: none; }
   </style>
 </head>
 <body>
   <h2>Local Whisper STT</h2>
   <p>Click <b>Enable Mic</b>, then <b>Start</b>, speak, then <b>Stop</b> to transcribe.</p>
 
-  <div>
+  <div class="row">
     <button id="enable">Enable Mic</button>
     <button id="start" disabled>Start Recording</button>
     <button id="stop" disabled>Stop</button>
+
+    <label>
+      <input type="checkbox" id="saveMp3" />
+      Save recording as MP3 on server
+    </label>
   </div>
 
   <div id="status">Status: idle</div>
@@ -30,6 +37,7 @@
     const enableBtn = document.getElementById("enable");
     const startBtn = document.getElementById("start");
     const stopBtn = document.getElementById("stop");
+    const saveMp3El = document.getElementById("saveMp3");
 
     let stream = null;
     let recorder = null;
@@ -39,9 +47,23 @@
       statusEl.textContent = `Status: ${msg}`;
     }
 
+    function pickRecorder(stream) {
+      // Safari/compatibility: pick first supported MIME type
+      const candidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ];
+      for (const c of candidates) {
+        if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) {
+          return new MediaRecorder(stream, { mimeType: c });
+        }
+      }
+      return new MediaRecorder(stream);
+    }
+
     enableBtn.onclick = async () => {
       try {
-        // Mic permission prompt happens here
         stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         setStatus("mic enabled");
         startBtn.disabled = false;
@@ -53,7 +75,13 @@
 
     startBtn.onclick = () => {
       chunks = [];
-      recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      try {
+        recorder = pickRecorder(stream);
+      } catch (e) {
+        setStatus("MediaRecorder not supported in this browser");
+        outEl.textContent = String(e);
+        return;
+      }
 
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunks.push(e.data);
@@ -62,9 +90,12 @@
       recorder.onstop = async () => {
         setStatus("uploading to Whisper…");
 
-        const blob = new Blob(chunks, { type: "audio/webm" });
+        const blob = new Blob(chunks, { type: recorder.mimeType || "application/octet-stream" });
         const form = new FormData();
         form.append("audio", blob, "audio.webm");
+
+        // ✅ send checkbox value to server
+        form.append("save_mp3", saveMp3El.checked ? "true" : "false");
 
         try {
           const res = await fetch("http://127.0.0.1:8000/transcribe", {
@@ -73,8 +104,10 @@
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data?.detail || JSON.stringify(data));
+
+          const savedNote = data.saved_audio ? `\n\nSaved: ${data.saved_audio}` : "";
           setStatus(`done (lang: ${data.language})`);
-          outEl.textContent = data.text || "(no text detected)";
+          outEl.textContent = (data.text || "(no text detected)") + savedNote;
         } catch (e) {
           setStatus("error");
           outEl.textContent = String(e);
@@ -96,4 +129,3 @@
   </script>
 </body>
 </html>
-
